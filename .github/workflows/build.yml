@@ -1,0 +1,91 @@
+name: Build nightly images
+on:
+  push:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 5' # Run every friday at midnight
+
+env:
+  KERNEL_BRANCH: adrian/lisa
+
+jobs:
+  build-image:
+    strategy:
+      matrix:
+        version: ["default"]
+
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out build configurations
+        uses: actions/checkout@v4
+
+      - name: Configure git
+        run: |
+          git config --global user.email "veythrix@gmail.com"
+          git config --global user.name "Veythrix"
+
+      - name: Substitute placeholders in configs
+        run: |
+          find . -type f -name "*.cfg" -exec sed -i "s|HOME|$(echo $HOME)|;s|NPROC|$(nproc)|" {} +
+
+      - name: Install pmbootstrap from git
+        run: |
+          git clone https://gitlab.postmarketos.org/postmarketOS/pmbootstrap.git --depth 1 --branch 3.2.0
+          mkdir -p ~/.local/bin
+          ln -s "$PWD/pmbootstrap/pmbootstrap.py" ~/.local/bin/pmbootstrap
+          pmbootstrap --version
+
+      - name: Set up pmaports
+        run: |
+          echo -e '\n\n' | pmbootstrap init || true
+          cd ~/.local/var/pmbootstrap/cache_git/pmaports
+          git remote add sm7325 https://github.com/mainlining/pmaports.git
+          DEFAULT_BRANCH=adrian/lisa
+          git fetch sm7325 $DEFAULT_BRANCH
+          git reset --hard sm7325/$DEFAULT_BRANCH
+
+      - name: Check kernel branch
+        if: matrix.version == 'default'
+        run: |
+          DEFAULT_BRANCH=adrian/lisa
+          echo "Default branch is $DEFAULT_BRANCH"
+          echo "KERNEL_BRANCH=$DEFAULT_BRANCH" >> $GITHUB_ENV
+
+      - name: Clone kernel sources
+        run: |
+          git clone https://github.com/mainlining/linux.git --single-branch --branch ${{ env.KERNEL_BRANCH }} --depth 1
+
+      - name: Choose xiaomi-lisa device in pmbootstrap to build kernel
+        run: |
+          cp xiaomi-lisa.cfg ~/.config/pmbootstrap_v3.cfg
+
+      - name: Compile kernel with envkernel
+        run: |
+          cd linux
+          shopt -s expand_aliases
+          source ../pmbootstrap/helpers/envkernel.sh
+          make defconfig lisa_defconfig
+          make -j$(nproc)
+          pmbootstrap build --envkernel linux-postmarketos-qcom-sm7325
+
+
+      - name: Create artifact directory
+        run: |
+          mkdir out
+
+      - name: Build xiaomi-lisa
+        run: |
+          cp xiaomi-lisa.cfg ~/.config/pmbootstrap.cfg
+          pmbootstrap install --password 147147
+          pmbootstrap export
+          cp /tmp/postmarketOS-export/boot.img out/boot-xiaomi-lisa.img
+          cp /tmp/postmarketOS-export/xiaomi-lisa.img out/rootfs-xiaomi-lisa.img
+          xz -T0 -9e -v out/rootfs-xiaomi-lisa.img
+          echo -e "n\nn\ny\n" | pmbootstrap zap
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaomi-lisa-testing
+          path: out/*-lisa.img*
+          retention-days: 7
